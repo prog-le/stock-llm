@@ -71,17 +71,17 @@
 ## 快速开始
 
 ### 1. 环境准备
-克隆项目
-git clone https://github.com/prog-le/stock-llm.git
-cd stock-llm
-安装依赖
-pip install -r requirements.txt
+- 克隆项目
+- git clone https://github.com/prog-le/stock-llm.git
+- cd stock-llm
+- 安装依赖
+- pip install -r requirements.txt
 
 ### 2. 配置设置
-修改 `.env` 文件：
-DASHSCOPE_API_KEY=your_api_key_here
-TUSHARE_TOKEN=your_token_here
-MAIRUI_LICENSE=your_license_here
+- 修改 `.env` 文件：
+- `DASHSCOPE_API_KEY=your_api_key_here`
+- `TUSHARE_TOKEN=your_token_here`
+- `MAIRUI_LICENSE=your_license_here`
 
 ### 3. 运行程序
 建议使用conda
