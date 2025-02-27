@@ -85,9 +85,9 @@ MAIRUI_LICENSE=your_license_here
 
 ### 3. 运行程序
 建议使用conda
-conda create --name stock-llm python=3.10
-conda activate stock-llm
-python main.py
+- conda create --name stock-llm python=3.10
+- conda activate stock-llm
+- python main.py
 
 ## 注意事项
 
