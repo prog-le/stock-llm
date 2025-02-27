@@ -22,7 +22,7 @@ wheels/
 *.egg
 
 # 环境文件
-.env
+
 .venv
 venv/
 ENV/
