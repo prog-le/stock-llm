@@ -131,3 +131,7 @@ MIT License
 - 作者：[Prog.le]
 - 邮箱：[Prog.le@outlook.com]
 - 项目地址：[https://github.com/prog-le/stock-llm]
+
+### 支付宝捐赠
+如果你觉得这个项目对你有帮助，可以通过支付宝进行捐赠：
+![支付宝收款码](https://github-something.oss-us-west-1.aliyuncs.com/%E6%94%B6%E6%AC%BE%E7%A0%81.jpg)
