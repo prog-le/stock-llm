@@ -1,6 +1,6 @@
 import requests
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 class MaiRuiStockAPI:
     """麦蕊股票数据API封装"""
@@ -161,3 +161,33 @@ class MaiRuiStockAPI:
             return []
         except (KeyError, IndexError):
             return []
+
+    def get_technical_indicators(self, stock_code: str) -> Dict[str, Any]:
+        """获取技术指标"""
+        try:
+            # 获取K线数据
+            klines = self._request(f"hsrl/kline/{stock_code}")
+            
+            # 计算技术指标
+            ma5 = self._calculate_ma(klines, 5)
+            ma10 = self._calculate_ma(klines, 10)
+            ma20 = self._calculate_ma(klines, 20)
+            
+            return {
+                'ma5': ma5,
+                'ma10': ma10,
+                'ma20': ma20,
+                'volume': klines[-1].get('v', 0) if klines and len(klines) > 0 else 0,
+                'turnover_rate': klines[-1].get('tr', 0) if klines and len(klines) > 0 else 0
+            }
+        except Exception as e:
+            print(f"获取技术指标失败: {str(e)}")
+            return {}
+
+    def _calculate_ma(self, klines: List[Dict], period: int) -> float:
+        """计算移动平均线"""
+        if not klines or len(klines) < period:
+            return 0
+        
+        closes = [float(k.get('c', 0)) for k in klines[-period:]]
+        return sum(closes) / period

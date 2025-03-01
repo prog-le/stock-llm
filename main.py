@@ -132,10 +132,13 @@ def analyze_portfolio(portfolio: Dict[str, float],
 def main():
     # 1. 加载环境变量
     load_dotenv()
-    api_key = os.getenv('DASHSCOPE_API_KEY')
+    api_key = os.getenv('DEEPSEEK_API_KEY')
     
     if not api_key:
-        raise ValueError("请在.env文件中设置DASHSCOPE_API_KEY")
+        # 尝试从DASHSCOPE_API_KEY获取
+        api_key = os.getenv('DASHSCOPE_API_KEY')
+        if not api_key:
+            raise ValueError("请在.env文件中设置DEEPSEEK_API_KEY或DASHSCOPE_API_KEY")
     
     # 2. 初始化组件
     print("初始化系统组件...")

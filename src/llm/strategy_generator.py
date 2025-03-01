@@ -1,13 +1,15 @@
-import dashscope
+from openai import OpenAI
 from typing import List, Dict, Any
 from ..data import MaiRuiStockAPI, FinancialDataFetcher
 import os
 
 class StrategyGenerator:
     def __init__(self, api_key: str):
-        """初始化阿里云API"""
-        os.environ['DASHSCOPE_API_KEY'] = api_key
-        dashscope.api_key = api_key
+        """初始化 DeepSeek API"""
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url="https://api.deepseek.com"
+        )
         self.stock_api = MaiRuiStockAPI()
         self.financial_api = FinancialDataFetcher()
     
@@ -19,17 +21,15 @@ class StrategyGenerator:
         可用资金：{balance}
         """
         
-        response = dashscope.Generation.call(
-            model='deepseek-v3',
-            api_key=os.getenv('DASHSCOPE_API_KEY'),
+        response = self.client.chat.completions.create(
+            model="deepseek-reasoner",
             messages=[
-                {"role": "system", "content": "你是一个专业的交易策略分析师，擅长制定股票交易策略。请根据当前的实际情况，重新评估我的交易策略，分析是否需要进行调整。如果需要调整，请给出新的交易策略，包括调整的原因、新的买卖价位和时机等。"},
+                {"role": "system", "content": "你是一个专业的交易策略分析师，擅长制定股票交易策略。"},
                 {"role": "user", "content": prompt}
-            ],
-            result_format='message'
+            ]
         )
         
-        strategy_text = response.output.choices[0].message.content
+        strategy_text = response.choices[0].message.content
         
         # 解析策略文本，提取具体操作建议
         strategy = self._parse_strategy(strategy_text)
