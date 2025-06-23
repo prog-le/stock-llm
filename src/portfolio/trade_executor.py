@@ -35,7 +35,7 @@ class TradeExecutor:
     
     def _get_current_price(self, ts_code: str) -> Optional[float]:
         """获取当前市场价格"""
-        quote = self.stock_data_fetcher.get_realtime_quotes(ts_code)
+        quote = self.stock_data_fetcher.get_realtime_quote(ts_code)
         return float(quote.get('price', 0)) if quote else None
     
     def _execute_buy(self, ts_code: str, current_price: float, strategy: Dict[str, Any]) -> bool:

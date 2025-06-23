@@ -41,8 +41,12 @@ class LLMService:
                 top_p=0.8,
             )
             
+            analysis_content = response.choices[0].message.content
+            trading_advice = self._parse_trading_advice(analysis_content)
+            
             return {
-                'analysis': response.choices[0].message.content,
+                'analysis': analysis_content,
+                'trading_advice': trading_advice,
                 'timestamp': datetime.now().isoformat(),
                 'status': 'success'
             }
@@ -54,6 +58,54 @@ class LLMService:
                 'status': 'error'
             }
     
+    def _parse_recommended_stocks(self, response_text: str) -> List[str]:
+        """从模型响应中解析推荐的股票代码"""
+        # 使用正则表达式匹配6位数字的股票代码
+        stock_codes = re.findall(r'\b\d{6}\b', response_text)
+        # 返回去重后的股票代码列表
+        return list(set(stock_codes))
+        
+    def _parse_trading_advice(self, analysis_text: str) -> Dict[str, Any]:
+        """从分析文本中解析交易建议"""
+        advice = {}
+        
+        # 提取交易方向
+        direction_match = re.search(r'交易方向[:：]\s*(买入|卖出|持有)', analysis_text)
+        if direction_match:
+            advice['direction'] = direction_match.group(1)
+            
+        # 提取目标价格
+        price_match = re.search(r'目标价格[:：]\s*([\d.]+)', analysis_text)
+        if price_match:
+            advice['target_price'] = float(price_match.group(1))
+            
+        # 提取交易数量
+        quantity_match = re.search(r'交易数量[:：]\s*([\d.]+)', analysis_text)
+        if quantity_match:
+            advice['quantity'] = int(float(quantity_match.group(1)))
+            
+        # 提取止损价格
+        stop_loss_match = re.search(r'止损价格[:：]\s*([\d.]+)', analysis_text)
+        if stop_loss_match:
+            advice['stop_loss'] = float(stop_loss_match.group(1))
+            
+        # 提取止盈目标
+        take_profit_match = re.search(r'止盈目标[:：]\s*([\d.]+)', analysis_text)
+        if take_profit_match:
+            advice['take_profit'] = float(take_profit_match.group(1))
+            
+        # 提取持仓时间
+        holding_period_match = re.search(r'持仓时间[:：]\s*([\d.]+)', analysis_text)
+        if holding_period_match:
+            advice['holding_period'] = int(float(holding_period_match.group(1)))
+            
+        # 提取风险等级
+        risk_level_match = re.search(r'风险等级[:：]\s*(低|中|高)', analysis_text)
+        if risk_level_match:
+            advice['risk_level'] = risk_level_match.group(1)
+            
+        return advice
+        
     def _build_analysis_prompt(self, stock_info: Dict[str, Any], 
                              news_list: List[Dict], 
                              financial_data: Dict[str, Any]) -> str:
@@ -198,10 +250,18 @@ ROE: {financial_data.get('roe')}
 推荐股票详细信息：
 {json.dumps(stock_details, ensure_ascii=False, indent=2)}
 
-请针对每只股票给出以下分析：
-1. 基本面分析 - 基于公司情况、行业前景等
-2. 技术面分析 - 基于提供的技术指标
-3. 市场情绪分析 - 基于相关新闻
+请根据以上信息，从风险收益比、市场趋势和估值水平等方面进行分析，并给出具体的投资建议。
+对于每只股票，请明确说明：
+1. 是否值得投资
+2. 建议买入价格区间
+3. 目标价格
+4. 建议持仓比例
+5. 止损点
+
+请以清晰、结构化的方式呈现分析结果。
+    1. 基本面分析 - 基于公司情况,行业前景等
+    2. 技术面分析 - 基于提供的技术指标
+    3. 市场情绪分析 - 基于相关新闻
 4. 风险提示 - 明确指出投资风险
 5. 具体交易建议
 

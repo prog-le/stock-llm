@@ -16,11 +16,6 @@ class DatabaseManager:
         # 确保数据目录存在
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         
-        # 如果数据库文件已存在，先删除它
-        if os.path.exists(db_path):
-            os.remove(db_path)
-            print("重新创建数据库...")
-        
         self.db_path = db_path
         self._init_db()
         self._migrate_db()
@@ -224,4 +219,4 @@ class DatabaseManager:
             result = cursor.fetchone()
             if result:
                 return json.loads(result[0])
-            return None 
+            return None

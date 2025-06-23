@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import time
 import os
 from dotenv import load_dotenv
+load_dotenv()
 
 class NewsDataFetcher:
     """新闻数据获取器"""
@@ -55,7 +56,7 @@ class NewsDataFetcher:
             # 使用新的新闻API接口
             url = "https://api.tanshuapi.com/api/toutiao/v1/index"
             params = {
-                "key": "f988e351306ae91d4325aae57b0f6c8a",
+                "key": os.getenv("TANSHU_API_KEY"),
                 "type": "股票",
                 "num": max(min_count, 40),  # 确保获取足够的新闻
                 "start": 0

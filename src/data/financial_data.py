@@ -1,17 +1,28 @@
+import os
 import tushare as ts
 from typing import List, Dict, Any
 from datetime import datetime
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 class FinancialDataFetcher:
     """财务数据获取器"""
     
-    def __init__(self, token: str = None):  # 修改为可选参数
-        """初始化财务数据获取器
+    def __init__(self, token: str = None):
+        """初始化财务数据获取器，从环境变量加载Tushare token
         
         Args:
-            token: API token，可选
+            token: API token，可选，若未提供则从环境变量TUSHARE_TOKEN获取
         """
-        self.token = token
+        self.token = token or os.getenv('TUSHARE_TOKEN')
+        if not self.token:
+            raise ValueError("请在.env文件中设置TUSHARE_TOKEN环境变量")
+        
+        # 初始化Tushare API
+        ts.set_token(self.token)
+        self.api = ts.pro_api()
     
     def get_financial_data(self, stock_code: str) -> dict:
         """获取股票财务数据

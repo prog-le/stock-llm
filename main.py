@@ -7,30 +7,41 @@ from src.portfolio import PortfolioManager, TradeExecutor
 from src.data.database import DatabaseManager
 
 def get_user_portfolio() -> Dict[str, float]:
-    """获取用户持仓信息"""
-    portfolio = {}
-    print("\n请输入您的持仓信息（输入空股票代码结束）：")
-    while True:
-        stock_code = input("\n请输入股票代码（直接回车结束）: ").strip()
-        if not stock_code:
-            break
-        try:
-            shares = float(input("请输入持仓数量: "))
-            cost = float(input("请输入成本价: "))
-            portfolio[stock_code] = {'shares': shares, 'cost': cost}
-        except ValueError:
-            print("输入格式错误，请重新输入")
-            continue
-    return portfolio
+    """获取用户持仓信息，测试环境返回默认值"""
+    # 测试环境默认持仓
+    return {
+        '600036': {'shares': 1000, 'cost': 30.5},
+        '000858': {'shares': 500, 'cost': 45.2}
+    }
+
+    # 实际环境用户输入代码（已注释）
+    # portfolio = {}
+    # print("\n请输入您的持仓信息（输入空股票代码结束）：")
+    # while True:
+    #     stock_code = input("\n请输入股票代码（直接回车结束）: ").strip()
+    #     if not stock_code:
+    #         break
+    #     try:
+    #         shares = float(input("请输入持仓数量: "))
+    #         cost = float(input("请输入成本价: "))
+    #         portfolio[stock_code] = {'shares': shares, 'cost': cost}
+    #     except ValueError:
+    #         print("输入格式错误，请重新输入")
+    #         continue
+    # return portfolio
 
 def get_user_balance() -> float:
-    """获取用户可用资金"""
-    while True:
-        try:
-            balance = float(input("\n请输入可用资金（元）: "))
-            return balance
-        except ValueError:
-            print("输入格式错误，请重新输入")
+    """获取用户可用资金，测试环境返回默认值"""
+    # 测试环境默认资金
+    return 100000.0
+
+    # 实际环境用户输入代码（已注释）
+    # while True:
+    #     try:
+    #         balance = float(input("\n请输入可用资金（元）: "))
+    #         return balance
+    #     except ValueError:
+    #         print("输入格式错误，请重新输入")
 
 def format_trading_advice(advice: Dict[str, Any]) -> str:
     """格式化交易建议输出"""
@@ -103,7 +114,8 @@ def analyze_portfolio(portfolio: Dict[str, float],
                 print(f"分析失败: {result.get('error')}")
             print("-" * 50)
             
-            input("\n按Enter继续...")
+            # 测试环境跳过用户交互
+            # input("\n按Enter继续...")
     
     # 2. 分析市场机会
     print("\n=== 分析市场机会 ===")

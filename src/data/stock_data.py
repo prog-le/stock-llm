@@ -1,5 +1,6 @@
 import requests
 import json
+import os
 from typing import Dict, List, Optional, Any
 
 class MaiRuiStockAPI:
@@ -7,7 +8,7 @@ class MaiRuiStockAPI:
     
     BASE_URL = "http://api.mairui.club"
     BACKUP_URL = "http://api1.mairui.club"
-    LICENSE = "8507084C-C56F-432E-8C43-FA40669B024B"
+    LICENSE = os.getenv("MAIRUI_LICENSE")
 
     def __init__(self):
         self.session = requests.Session()

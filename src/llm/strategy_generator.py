@@ -54,6 +54,31 @@ class StrategyGenerator:
             strategy["action"] = "sell"
         
         # 提取止损止盈价格
-        # TODO: 使用更复杂的文本分析来提取具体数值
+        import re
         
+        # 提取止损价格
+        stop_loss_match = re.search(r'止损价格[:：]\s*([\d.]+)', strategy_text)
+        if stop_loss_match:
+            strategy['stop_loss'] = float(stop_loss_match.group(1))
+            
+        # 提取止盈价格
+        take_profit_match = re.search(r'止盈价格[:：]\s*([\d.]+)', strategy_text)
+        if take_profit_match:
+            strategy['take_profit'] = float(take_profit_match.group(1))
+            
+        # 提取目标价格
+        target_price_match = re.search(r'目标价格[:：]\s*([\d.]+)', strategy_text)
+        if target_price_match:
+            strategy['price'] = float(target_price_match.group(1))
+            
+        # 提取交易数量
+        quantity_match = re.search(r'交易数量[:：]\s*([\d.]+)', strategy_text)
+        if quantity_match:
+            strategy['quantity'] = int(float(quantity_match.group(1)))
+            
+        # 提取风险等级
+        risk_match = re.search(r'风险等级[:：]\s*(低|中|高)', strategy_text)
+        if risk_match:
+            strategy['risk_level'] = risk_match.group(1)
+            
         return strategy
