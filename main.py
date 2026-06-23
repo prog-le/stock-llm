@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from typing import Dict, List, Any
 from src.data import MaiRuiStockAPI, FinancialDataFetcher, NewsDataFetcher
 from src.llm import LLMService
-from src.portfolio import PortfolioManager, TradeExecutor
+from src.portfolio import PortfolioManager
 from src.data.database import DatabaseManager
 
 def get_user_portfolio() -> Dict[str, float]:
@@ -80,7 +80,16 @@ def analyze_portfolio(portfolio: Dict[str, float],
             if not stock_info:
                 print(f"无法获取股票 {stock_code} 的信息")
                 continue
-            
+
+            # 获取实时行情（注入到 stock_info 让 LLM 拿到当前价）
+            # T3.1: 让 LLM 决策时知道当前市场价, 避免 LLM 编造价格
+            try:
+                quote = stock_api.get_realtime_quote(stock_code)
+                stock_info['current_price'] = quote.get('price', 0)
+            except Exception as e:
+                print(f"获取 {stock_code} 实时行情失败: {e}")
+                stock_info['current_price'] = 0
+
             # 保存股票信息
             db.save_stock_info(stock_info)
             

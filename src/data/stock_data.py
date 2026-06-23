@@ -2,6 +2,9 @@ import requests
 import json
 import os
 from typing import Dict, List, Optional, Any
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class MaiRuiStockAPI:
     """麦蕊股票数据API封装"""
@@ -15,26 +18,34 @@ class MaiRuiStockAPI:
     
     def _request(self, endpoint: str, params: Optional[Dict] = None) -> List[Dict]:
         """发送API请求
-        
+
+        主接口失败时自动降级到备用接口；主备都失败时返回 ``[]``
+        而不是让异常逃逸（避免主流程被网络抖动打挂）。
+
         Args:
             endpoint: API端点
             params: 请求参数
-            
+
         Returns:
-            List[Dict]: JSON响应数据
+            List[Dict]: JSON响应数据；失败时返回空列表
         """
         url = f"{self.BASE_URL}/{endpoint}/{self.LICENSE}"
-        
+
         try:
             response = self.session.get(url, params=params)
             response.raise_for_status()
             return response.json()
-        except requests.RequestException:
-            # 主接口失败时尝试备用接口
-            backup_url = f"{self.BACKUP_URL}/{endpoint}/{self.LICENSE}"
-            response = self.session.get(backup_url, params=params)
-            response.raise_for_status()
-            return response.json()
+        except (requests.RequestException, ValueError):
+            # 主接口失败（网络 / HTTP / JSON 解析）时尝试备用接口
+            try:
+                backup_url = f"{self.BACKUP_URL}/{endpoint}/{self.LICENSE}"
+                response = self.session.get(backup_url, params=params)
+                response.raise_for_status()
+                return response.json()
+            except (requests.RequestException, ValueError) as e:
+                # 主备都失败：打印告警并返回空列表
+                print(f"麦蕊 API 主备均失败 ({endpoint}): {e}")
+                return []
 
     def get_stock_list(self) -> List[Dict]:
         """获取沪深两市股票列表

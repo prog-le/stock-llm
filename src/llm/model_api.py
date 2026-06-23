@@ -1,126 +1,215 @@
-import os
-from openai import OpenAI
-import re
+"""
+LLM 服务接口 — 使用 Instructor + Pydantic v2 实现结构化输出。
+
+本模块封装了 DeepSeek API 调用，利用 Instructor 将模型输出
+自动反序列化为预定义的 Pydantic 模型，取代手写正则解析。
+
+公开方法
+--------
+- analyze_stock(stock_info, news_list, financial_data)
+- analyze_market(news_list, available_cash)
+"""
+
 import json
-from typing import Dict, Any, List
+import traceback
 from datetime import datetime
-from ..data import MaiRuiStockAPI, NewsDataFetcher, FinancialDataFetcher  # 添加缺失的导入
+from typing import Any, Callable, Dict, List, Optional
+
+import instructor
+from instructor.core import InstructorRetryException
+from openai import OpenAI
+
+from ..data import MaiRuiStockAPI, NewsDataFetcher, FinancialDataFetcher
+from .schemas import (
+    AnalysisStatus,
+    MarketAnalysis,
+    StockAnalysis,
+    StockRecommendations,
+)
+
 
 class LLMService:
-    """大模型服务接口"""
-    
+    """大模型服务接口 — 基于 Instructor 的结构化 LLM 调用。"""
+
     def __init__(self, api_key: str):
-        """初始化 DeepSeek API"""
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url="https://api.deepseek.com"
+        """初始化 DeepSeek API，并通过 Instructor 包装以支持结构化输出。"""
+        self.client = instructor.from_openai(
+            OpenAI(api_key=api_key, base_url="https://api.deepseek.com"),
+            mode=instructor.Mode.TOOLS,
         )
-        self.stock_api = MaiRuiStockAPI()  # 初始化股票API
-        self.financial_api = FinancialDataFetcher()  # 初始化财务数据API
-        self.news_api = NewsDataFetcher()  # 初始化新闻API
-    
-    def analyze_stock(self, stock_info: Dict[str, Any], news_list: List[Dict], 
-                     financial_data: Dict[str, Any]) -> Dict[str, Any]:
-        """分析股票投资价值"""
+        self.stock_api = MaiRuiStockAPI()
+        self.financial_api = FinancialDataFetcher()
+        self.news_api = NewsDataFetcher()
+
+    # ──────────────────────────────────────────────
+    # 公共方法
+    # ──────────────────────────────────────────────
+
+    def analyze_stock(
+        self,
+        stock_info: Dict[str, Any],
+        news_list: List[Dict],
+        financial_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """分析股票投资价值并给出结构化交易建议。
+
+        使用 Instructor + ``StockAnalysis`` 模型将 LLM 输出自动解析为
+        结构化 dict（兼容 main.py 的 legacy 格式）。
+
+        Args:
+            stock_info: 股票基本信息（含 code, name, industry, main_business）。
+            news_list: 相关新闻列表，最多取前 3 条。
+            financial_data: 财务数据（含 revenue, net_profit, gross_margin, roe）。
+
+        Returns:
+            dict: 包含 status / analysis / trading_advice / timestamp 的 dict。
+                  失败时返回 AnalysisStatus.error_dict 格式。
+        """
         try:
-            # 构建提示词
             prompt = self._build_analysis_prompt(stock_info, news_list, financial_data)
-            
-            # 调用模型
-            response = self.client.chat.completions.create(
-                model="deepseek-reasoner",  # 使用 DeepSeek-R1 模型
-                messages=[{
-                    'role': 'system',
-                    'content': '你是一个专业的股票分析师，擅长分析公司基本面、行业前景和财务数据。'
-                }, {
-                    'role': 'user',
-                    'content': prompt
-                }],
-                temperature=0.7,
-                max_tokens=1500,
-                top_p=0.8,
+            result = self.client.create(
+                model="deepseek-chat",
+                response_model=StockAnalysis,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "你是一个专业的股票分析师，擅长分析公司基本面、行业前景和财务数据。",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                max_retries=3,
+                strict=True,
             )
-            
-            analysis_content = response.choices[0].message.content
-            trading_advice = self._parse_trading_advice(analysis_content)
-            
-            return {
-                'analysis': analysis_content,
-                'trading_advice': trading_advice,
-                'timestamp': datetime.now().isoformat(),
-                'status': 'success'
-            }
-            
+            return result.to_legacy_dict()
         except Exception as e:
-            return {
-                'error': f"分析失败: {str(e)}",
-                'timestamp': datetime.now().isoformat(),
-                'status': 'error'
-            }
-    
-    def _parse_recommended_stocks(self, response_text: str) -> List[str]:
-        """从模型响应中解析推荐的股票代码"""
-        # 使用正则表达式匹配6位数字的股票代码
-        stock_codes = re.findall(r'\b\d{6}\b', response_text)
-        # 返回去重后的股票代码列表
-        return list(set(stock_codes))
-        
-    def _parse_trading_advice(self, analysis_text: str) -> Dict[str, Any]:
-        """从分析文本中解析交易建议"""
-        advice = {}
-        
-        # 提取交易方向
-        direction_match = re.search(r'交易方向[:：]\s*(买入|卖出|持有)', analysis_text)
-        if direction_match:
-            advice['direction'] = direction_match.group(1)
-            
-        # 提取目标价格
-        price_match = re.search(r'目标价格[:：]\s*([\d.]+)', analysis_text)
-        if price_match:
-            advice['target_price'] = float(price_match.group(1))
-            
-        # 提取交易数量
-        quantity_match = re.search(r'交易数量[:：]\s*([\d.]+)', analysis_text)
-        if quantity_match:
-            advice['quantity'] = int(float(quantity_match.group(1)))
-            
-        # 提取止损价格
-        stop_loss_match = re.search(r'止损价格[:：]\s*([\d.]+)', analysis_text)
-        if stop_loss_match:
-            advice['stop_loss'] = float(stop_loss_match.group(1))
-            
-        # 提取止盈目标
-        take_profit_match = re.search(r'止盈目标[:：]\s*([\d.]+)', analysis_text)
-        if take_profit_match:
-            advice['take_profit'] = float(take_profit_match.group(1))
-            
-        # 提取持仓时间
-        holding_period_match = re.search(r'持仓时间[:：]\s*([\d.]+)', analysis_text)
-        if holding_period_match:
-            advice['holding_period'] = int(float(holding_period_match.group(1)))
-            
-        # 提取风险等级
-        risk_level_match = re.search(r'风险等级[:：]\s*(低|中|高)', analysis_text)
-        if risk_level_match:
-            advice['risk_level'] = risk_level_match.group(1)
-            
-        return advice
-        
-    def _build_analysis_prompt(self, stock_info: Dict[str, Any], 
-                             news_list: List[Dict], 
-                             financial_data: Dict[str, Any]) -> str:
-        """构建分析提示词"""
-        prompt = f"""请分析以下股票的投资价值并给出具体的交易建议：
+            return self._handle_error(e)
+
+    def analyze_market(
+        self, news_list: List[Dict], available_cash: float,
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        """分析市场机会（三步流程：推荐股票 → 获取详情 → 深度分析）。
+
+        Args:
+            news_list: 当日市场新闻列表，最多取前 10 条。
+            available_cash: 可用资金（单位：元）。
+            progress_callback: 可选回调，每步执行时通知 UI（参数为进度消息字符串）。
+
+        Returns:
+            dict: 包含 status / analysis / timestamp 的 dict。
+                  失败时返回 AnalysisStatus.error_dict 格式。
+        """
+        try:
+            # 第一步：根据新闻推荐股票
+            if progress_callback:
+                progress_callback("第 1/3 步：AI 从新闻中推荐股票...")
+            recommendations = self._step1_recommend_stocks(news_list)
+            recommended_stocks = [r.code for r in recommendations.recommendations]
+            print(f"\n解析出的股票代码: {recommended_stocks}")
+
+            if not recommended_stocks:
+                return AnalysisStatus.error_dict(
+                    "validation_error", "未能从模型响应中解析出有效的股票代码"
+                )
+
+            # 第二步：获取推荐股票的详细信息
+            if progress_callback:
+                progress_callback(
+                    f"第 2/3 步：获取 {len(recommended_stocks)} 只推荐股的行情/财务/新闻..."
+                )
+            stock_details = self._step2_fetch_details(
+                recommended_stocks, progress_callback
+            )
+
+            if not stock_details:
+                return AnalysisStatus.error_dict(
+                    "api_error", "无法获取任何推荐股票的详细信息"
+                )
+
+            # 第三步：深入分析并生成最终建议
+            if progress_callback:
+                progress_callback("第 3/3 步：AI 深度分析并生成交易建议...")
+            market_analysis = self._step3_deep_analysis(
+                available_cash, stock_details
+            )
+            return market_analysis.to_legacy_dict()
+
+        except Exception as e:
+            error_msg = f"分析失败: {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            return self._handle_error(e, log_traceback=False)
+
+    # ──────────────────────────────────────────────
+    # 私有方法 — 提示词构建
+    # ──────────────────────────────────────────────
+
+    def _build_analysis_prompt(
+        self,
+        stock_info: Dict[str, Any],
+        news_list: List[Dict],
+        financial_data: Dict[str, Any],
+    ) -> str:
+        """构建个股分析提示词。
+
+        注意：提示词中会包含用户的**实际持仓信息**（股数、成本、浮盈浮亏），
+        以便 LLM 给出结合当前仓位的交易建议，而非泛泛的买入/卖出。
+        """
+        code = stock_info.get("code", "—")
+        name = stock_info.get("name", "—")
+        industry = stock_info.get("industry", "—")
+        business = stock_info.get("main_business", "—")
+        price = stock_info.get("current_price", "未知")
+
+        # ── 持仓信息（由 AnalysisRunner 在调用前注入 stock_info["position"]） ──
+        position = stock_info.get("position")
+        if position:
+            shares = position.get("shares", 0)
+            cost = position.get("cost", 0)
+            cost_basis = shares * cost
+            market_value = shares * price if isinstance(price, (int, float)) else 0
+            profit_pct = ((price - cost) / cost * 100) if cost > 0 and isinstance(price, (int, float)) else None
+            profit_amount = market_value - cost_basis
+            position_block = f"""已持仓数量: {shares:.0f} 股
+持仓成本价: {cost:.2f} 元/股
+持仓总成本: {cost_basis:.2f} 元
+当前市值: {market_value:.2f} 元"""
+            if profit_pct is not None:
+                position_block += f"""
+浮盈浮亏: {profit_amount:+.2f} 元 ({profit_pct:+.1f}%)"""
+        else:
+            position_block = "（未持仓 — 作为新开仓参考）"
+
+        prompt = f"""请分析以下股票的投资价值并给出具体的交易建议。
+
+【重要】你必须基于用户的【实际持仓情况】给出交易建议，而非泛泛分析：
+- 如果用户已持仓，根据盈亏状态选择「持有 / 加仓 / 减仓 / 卖出」
+- 如果用户未持仓，选择「买入」或「持有」
+
+可选交易方向说明（请从以下 5 个中选 1 个）：
+- 买入：新开仓买入（当前未持仓时）
+- 加仓：已持仓，追加买入以增加仓位
+- 卖出：清仓卖出（全部卖出）
+- 减仓：已持仓，部分卖出以降低风险
+- 持有：维持现状不动
+
+数量要求：
+- 买入/加仓：数量 = 该笔买入的股数（不含已有持仓）
+- 卖出/减仓：数量 = 该笔卖出的股数
+- 持有：数量可填 0
 
 1. 股票基本信息:
-代码: {stock_info.get('code')}
-名称: {stock_info.get('name')}
-所属行业: {stock_info.get('industry')}
-主营业务: {stock_info.get('main_business')}
+代码: {code}
+名称: {name}
+所属行业: {industry}
+主营业务: {business}
+当前价格: {price} 元
 
-2. 最新相关新闻:
+2. 你的实际持仓（请据此给出针对性建议）:
+{position_block}
+
+3. 最新相关新闻:
 """
-        
+
         for i, news in enumerate(news_list[:3], 1):
             prompt += f"""
 新闻{i}:
@@ -128,9 +217,9 @@ class LLMService:
 时间: {news.get('time')}
 内容: {news.get('content')}
 """
-        
+
         prompt += f"""
-3. 主要财务指标:
+4. 主要财务指标:
 营业收入: {financial_data.get('revenue')}
 净利润: {financial_data.get('net_profit')}
 毛利率: {financial_data.get('gross_margin')}
@@ -147,7 +236,7 @@ ROE: {financial_data.get('roe')}
 你必须严格按照以下格式给出交易建议（包含所有字段且不能为空）：
 
 交易建议：
-交易方向：[买入/卖出]
+交易方向：[买入/卖出/持有/加仓/减仓]
 目标价格：[具体数字，单位：元]
 交易数量：[具体数字，单位：股]
 止损价格：[具体数字，单位：元]
@@ -164,25 +253,27 @@ ROE: {financial_data.get('roe')}
 
 请先给出分析，然后在最后给出严格按照上述格式的交易建议。
 """
-        return prompt 
+        return prompt
 
-    def analyze_market(self, news_list: List[Dict], available_cash: float) -> Dict[str, Any]:
-        """分析市场机会"""
-        try:
-            # 第一步: 根据新闻分析推荐股票
-            initial_prompt = f"""请分析以下最新市场新闻,并推荐3-5只值得关注的股票：
+    # ──────────────────────────────────────────────
+    # 私有方法 — 市场分析三步流程
+    # ──────────────────────────────────────────────
+
+    def _step1_recommend_stocks(self, news_list: List[Dict]) -> StockRecommendations:
+        """第一步：根据新闻推荐 3-5 只股票。"""
+        prompt = f"""请分析以下最新市场新闻,并推荐3-5只值得关注的股票：
 
 1. 最新市场新闻：
 """
-            for i, news in enumerate(news_list[:10], 1):  # 增加到10条新闻
-                initial_prompt += f"""
+        for i, news in enumerate(news_list[:10], 1):
+            prompt += f"""
 新闻{i}:
 标题: {news.get('title')}
 时间: {news.get('time')}
 内容: {news.get('content')}
 """
-            
-            initial_prompt += """
+
+        prompt += """
 请根据以上新闻分析当前市场环境，并推荐3-5只值得关注的股票。
 对于每只推荐的股票，请提供：
 1. 股票代码（格式为6位数字，如000001、600000等）
@@ -192,58 +283,67 @@ ROE: {financial_data.get('roe')}
 注意：请不要假设或猜测股票的当前价格，我们会在后续分析中获取实时数据。
 """
 
-            print("\n发送给模型的初始提示词:")
-            print("-" * 50)
-            print(initial_prompt)
-            print("-" * 50)
+        print("\n发送给模型的初始提示词:")
+        print("-" * 50)
+        print(prompt)
+        print("-" * 50)
 
-            initial_response = self.client.chat.completions.create(
-                model="deepseek-reasoner",
-                messages=[{
-                    'role': 'system',
-                    'content': '你是一个专业的投资顾问,请根据新闻信息推荐股票。请确保提供准确的股票代码（6位数字）。'
-                }, {
-                    'role': 'user',
-                    'content': initial_prompt
-                }]
-            )
+        result = self.client.create(
+            model="deepseek-chat",
+            response_model=StockRecommendations,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是一个专业的投资顾问,请根据新闻信息推荐股票。请确保提供准确的股票代码（6位数字）。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_retries=3,
+            strict=True,
+        )
 
-            print("\n模型初始响应:")
-            print("-" * 50)
-            print(initial_response.choices[0].message.content)
-            print("-" * 50)
+        print("\n模型初始响应:")
+        print("-" * 50)
+        print(result.model_dump_json(indent=2, ensure_ascii=False))
+        print("-" * 50)
 
-            # 解析推荐的股票代码
-            recommended_stocks = self._parse_recommended_stocks(initial_response.choices[0].message.content)
-            print(f"\n解析出的股票代码: {recommended_stocks}")
-            
-            if not recommended_stocks:
-                return {
-                    'error': "未能从模型响应中解析出有效的股票代码",
-                    'timestamp': datetime.now().isoformat(),
-                    'status': 'error'
-                }
-            
-            # 第二步: 获取推荐股票的详细信息
-            stock_details = []
-            for stock_code in recommended_stocks:
-                print(f"\n获取股票 {stock_code} 的详细信息...")
-                details = self._get_stock_details(stock_code)
-                if details:
-                    stock_details.append(details)
-                    print(f"成功获取 {stock_code} 的详细信息")
-                else:
-                    print(f"无法获取 {stock_code} 的详细信息")
+        return result
 
-            if not stock_details:
-                return {
-                    'error': "无法获取任何推荐股票的详细信息",
-                    'timestamp': datetime.now().isoformat(),
-                    'status': 'error'
-                }
+    def _step2_fetch_details(
+        self, stock_codes: List[str],
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> List[Dict]:
+        """第二步：获取推荐股票的详细信息（行情 + 财务 + 新闻 + 技术指标）。
+        
+        每只股票依次拉取 4 个数据接口（get_stock_info / financial / news / tech_indicators），
+        通过 progress_callback 实时通知 UI，避免长时间无反馈。
+        """
+        stock_details = []
+        total = len(stock_codes)
+        for i, stock_code in enumerate(stock_codes, 1):
+            msg = f"  [{i}/{total}] 获取 {stock_code} 行情+财务+新闻..."
+            print(f"\n{msg}")
+            if progress_callback:
+                progress_callback(msg)
+            details = self._get_stock_details(stock_code)
+            if details:
+                stock_details.append(details)
+                ok_msg = f"  ✓ {stock_code} 详情获取完成"
+                print(ok_msg)
+                if progress_callback:
+                    progress_callback(ok_msg)
+            else:
+                fail_msg = f"  ✗ {stock_code} 获取失败，跳过"
+                print(fail_msg)
+                if progress_callback:
+                    progress_callback(fail_msg)
+        return stock_details
 
-            # 第三步: 对推荐股票进行深入分析
-            final_prompt = f"""请对以下股票进行深入分析并给出具体交易建议：
+    def _step3_deep_analysis(
+        self, available_cash: float, stock_details: List[Dict]
+    ) -> MarketAnalysis:
+        """第三步：对推荐股票进行深入分析，生成 MarketAnalysis。"""
+        prompt = f"""请对以下股票进行深入分析并给出具体交易建议：
 
 可用资金：{available_cash}元
 
@@ -280,142 +380,71 @@ ROE: {financial_data.get('roe')}
 4. 请考虑资金管理，不要将全部资金投入单一股票
 """
 
-            print("\n发送给模型的最终提示词:")
-            print("-" * 50)
-            print(final_prompt)
-            print("-" * 50)
+        print("\n发送给模型的最终提示词:")
+        print("-" * 50)
+        print(prompt)
+        print("-" * 50)
 
-            final_response = self.client.chat.completions.create(
-                model="deepseek-reasoner",
-                messages=[{
-                    'role': 'system',
-                    'content': '你是一个专业的投资顾问,请给出详细的分析和具体的交易建议。请不要假设股票的当前价格，而是基于提供的技术指标给出合理的买入区间。'
-                }, {
-                    'role': 'user',
-                    'content': final_prompt
-                }]
-            )
+        result = self.client.create(
+            model="deepseek-chat",
+            response_model=MarketAnalysis,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是一个专业的投资顾问,请给出详细的分析和具体的交易建议。请不要假设股票的当前价格，而是基于提供的技术指标给出合理的买入区间。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_retries=3,
+            strict=True,
+        )
 
-            print("\n模型最终响应:")
-            print("-" * 50)
-            print(final_response.choices[0].message.content)
-            print("-" * 50)
+        print("\n模型最终响应:")
+        print("-" * 50)
+        print(result.model_dump_json(indent=2, ensure_ascii=False))
+        print("-" * 50)
 
-            return {
-                'analysis': final_response.choices[0].message.content,
-                'timestamp': datetime.now().isoformat(),
-                'status': 'success'
-            }
+        return result
 
-        except Exception as e:
-            import traceback
-            error_msg = f"分析失败: {str(e)}\n{traceback.format_exc()}"
-            print(error_msg)
-            return {
-                'error': error_msg,
-                'timestamp': datetime.now().isoformat(),
-                'status': 'error'
-            }
-
-    def _parse_recommended_stocks(self, content: str) -> List[str]:
-        """从模型输出中解析推荐的股票代码"""
-        # 使用正则表达式匹配股票代码
-        stock_codes = re.findall(r'[036]\d{5}', content)
-        return list(set(stock_codes))  # 去重
+    # ──────────────────────────────────────────────
+    # 私有方法 — 数据获取 & 错误处理
+    # ──────────────────────────────────────────────
 
     def _get_stock_details(self, stock_code: str) -> Dict[str, Any]:
-        """获取股票详细信息"""
+        """获取股票详细信息（用于市场分析第二步）。"""
         try:
-            # 获取基本面信息
             basic_info = self.stock_api.get_stock_info(stock_code)
-            
-            # 获取最新财务指标
             financial_data = self.financial_api.get_financial_data(stock_code)
-            
-            # 获取相关新闻
             news = self.news_api.get_stock_news(stock_code, days=7)
-            
-            # 获取技术指标
             technical_indicators = self.stock_api.get_technical_indicators(stock_code)
-            
+
             return {
-                'basic_info': basic_info,
-                'financial_data': financial_data,
-                'news': news[:3],  # 只取最新的3条新闻
-                'technical_indicators': technical_indicators
+                "basic_info": basic_info,
+                "financial_data": financial_data,
+                "news": news[:3],
+                "technical_indicators": technical_indicators,
             }
         except Exception as e:
             print(f"获取股票 {stock_code} 详细信息失败: {str(e)}")
             return None
 
-    def _parse_trading_advice(self, analysis_text: str) -> Dict[str, Any]:
-        """从分析文本中解析出具体的交易建议"""
-        try:
-            advice = {
-                'direction': None,
-                'target_price': None,
-                'quantity': None,
-                'stop_loss': None,
-                'take_profit': None,
-                'holding_period': None,
-                'risk_level': None,
-                'raw_text': analysis_text
-            }
-            
-            # 使用更精确的正则表达式匹配
-            patterns = {
-                'direction': r'交易方向：\s*(买入|卖出)',
-                'target_price': r'目标价格：\s*(\d+\.?\d*)',
-                'quantity': r'交易数量：\s*(\d+)',
-                'stop_loss': r'止损价格：\s*(\d+\.?\d*)',
-                'take_profit': r'止盈目标：\s*(\d+\.?\d*)',
-                'holding_period': r'持仓时间：\s*(\d+)',
-                'risk_level': r'风险等级：\s*(高|中|低)'
-            }
-            
-            for key, pattern in patterns.items():
-                match = re.search(pattern, analysis_text)
-                if match:
-                    value = match.group(1)
-                    if key in ['target_price', 'stop_loss', 'take_profit']:
-                        advice[key] = float(value)
-                    elif key in ['quantity', 'holding_period']:
-                        advice[key] = int(value)
-                    else:
-                        advice[key] = value
-            
-            return advice
-            
-        except Exception as e:
-            print(f"解析交易建议时出错: {str(e)}")
-            return None
+    @staticmethod
+    def _handle_error(e: Exception, log_traceback: bool = True) -> Dict[str, Any]:
+        """统一错误处理：区分 InstructorRetryException 和通用异常。
 
-    def get_technical_indicators(self, stock_code: str) -> Dict[str, Any]:
-        """获取技术指标"""
-        try:
-            # 获取K线数据
-            klines = self._request(f"hsrl/kline/{stock_code}")
-            
-            # 计算技术指标
-            ma5 = self._calculate_ma(klines, 5)
-            ma10 = self._calculate_ma(klines, 10)
-            ma20 = self._calculate_ma(klines, 20)
-            
-            return {
-                'ma5': ma5,
-                'ma10': ma10,
-                'ma20': ma20,
-                'volume': klines[-1].get('v', 0),
-                'turnover_rate': klines[-1].get('tr', 0)
-            }
-        except Exception as e:
-            print(f"获取技术指标失败: {str(e)}")
-            return {}
+        Returns:
+            AnalysisStatus.error_dict 格式的 dict。
+        """
+        error_msg = str(e)
+        if log_traceback:
+            error_msg = f"{error_msg}\n{traceback.format_exc()}"
 
-    def _calculate_ma(self, klines: List[Dict], period: int) -> float:
-        """计算移动平均线"""
-        if len(klines) < period:
-            return 0
-        
-        closes = [float(k.get('c', 0)) for k in klines[-period:]]
-        return sum(closes) / period
+        # Instructor 重试耗尽 → validation_error
+        # NOTE: error_dict(error_msg, error_type) 签名: 第一个是 message, 第二个是 type
+        if isinstance(e, InstructorRetryException):
+            return AnalysisStatus.error_dict(
+                f"Failed after 3 retries: {e}", "validation_error"
+            )
+
+        # 网络 / API 等通用异常 → api_error
+        return AnalysisStatus.error_dict(error_msg, "api_error")

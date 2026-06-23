@@ -9,13 +9,15 @@ class DatabaseManager:
     
     def __init__(self, db_path: str = "data/stock_analysis.db"):
         """初始化数据库连接
-        
+
         Args:
             db_path: 数据库文件路径
         """
-        # 确保数据目录存在
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        
+        # 确保数据目录存在（仅当 db_path 含目录前缀时；纯文件名时 dirname 为空）
+        dirname = os.path.dirname(db_path)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+
         self.db_path = db_path
         self._init_db()
         self._migrate_db()
@@ -62,6 +64,19 @@ class DatabaseManager:
                     url TEXT
                 )
             """)
+
+            # 唯一索引：让 save_news() 的 INSERT OR REPLACE 真正生效，
+            # 否则因 PK 是自增 id，主键永远不会冲突→永远只 INSERT 不 REPLACE，
+            # 同一只股票 + 同一标题 + 同一时间 的新闻会被反复写入，DB 无限膨胀。
+            # 如果旧库已有重复行，建索引会失败——catch 住、打印告警，让程序继续跑。
+            try:
+                cursor.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_news_dedup
+                    ON news_data(stock_code, title, news_time)
+                """)
+            except sqlite3.IntegrityError as e:
+                print(f"警告: news_data 已有重复行，无法创建去重索引 ({e})；"
+                      f"INSERT OR REPLACE 将退化为纯 INSERT。")
             
             # 创建股票基本信息表
             cursor.execute("""
@@ -119,19 +134,26 @@ class DatabaseManager:
                 print("数据库结构更新完成")
     
     def save_stock_analysis(self, stock_code: str, analysis_result: Dict[str, Any]):
-        """保存股票分析结果"""
+        """保存股票分析结果。
+
+        ``analysis_data`` 列存的是 ``to_legacy_dict()`` 产出的完整 dict
+        （summary / fundamental / industry_outlook / news_impact /
+        financial_review / trading_advice / confidence + meta），
+        而不是只存 summary 字符串——确保 7 字段不丢，方便"回看历史"
+        时（场景 3）拿回 AI 当时给出的全部判断。
+        """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
-            # 保存分析结果
+
+            # 完整 dict 落库（json），trading_advice 单独列方便按字段查询
             cursor.execute("""
-                INSERT INTO stock_analysis 
+                INSERT INTO stock_analysis
                 (stock_code, stock_name, analysis_data, trading_advice, timestamp, status)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 stock_code,
                 analysis_result.get('stock_name', ''),
-                json.dumps(analysis_result.get('analysis', ''), ensure_ascii=False),
+                json.dumps(analysis_result, ensure_ascii=False),
                 json.dumps(analysis_result.get('trading_advice', {}), ensure_ascii=False),
                 analysis_result.get('timestamp'),
                 analysis_result.get('status')

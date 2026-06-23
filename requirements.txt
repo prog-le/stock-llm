@@ -15,3 +15,5 @@ python-multipart>=0.0.6
 beanie>=1.20.0
 motor>=3.2.0
 openai
+instructor>=1.0.0  # Pydantic-based structured LLM output (T2.1)
+textual>=1.0.0  # TUI framework for interactive terminal (TUI)

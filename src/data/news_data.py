@@ -23,75 +23,172 @@ class NewsDataFetcher:
     
     def _request(self, endpoint: str) -> List[Dict]:
         """发送API请求
-        
+
+        主接口失败时自动降级到备用接口；主备都失败时返回 ``[]``
+        而不是让异常逃逸（避免主流程被网络抖动打挂）。
+
         Args:
             endpoint: API端点
-            
+
         Returns:
-            List[Dict]: JSON响应数据
+            List[Dict]: JSON响应数据；失败时返回空列表
         """
         url = f"{self.BASE_URL}/{endpoint}/{self.LICENSE}"
-        
+
         try:
             response = self.session.get(url)
             response.raise_for_status()
             return response.json()
-        except requests.RequestException:
-            # 主接口失败时尝试备用接口
-            backup_url = f"{self.BACKUP_URL}/{endpoint}/{self.LICENSE}"
-            response = self.session.get(backup_url)
-            response.raise_for_status()
-            return response.json()
+        except (requests.RequestException, ValueError):
+            # 主接口失败（网络 / HTTP / JSON 解析）时尝试备用接口
+            try:
+                backup_url = f"{self.BACKUP_URL}/{endpoint}/{self.LICENSE}"
+                response = self.session.get(backup_url)
+                response.raise_for_status()
+                return response.json()
+            except (requests.RequestException, ValueError) as e:
+                # 主备都失败：打印告警并返回空列表，让调用方走降级路径
+                print(f"麦蕊 API 主备均失败 ({endpoint}): {e}")
+                return []
 
     def get_daily_news(self, min_count: int = 20) -> List[Dict]:
         """获取每日财经新闻
-        
+
+        优先使用 Tanshu API（需 TANSHU_API_KEY），
+        失败时自动降级到新浪财经免费 feed（无需 key）。
+
         Args:
             min_count: 最少获取的新闻条数
-            
+
         Returns:
-            List[Dict]: 新闻列表，每条新闻包含标题、内容、来源、时间等信息
+            List[Dict]: 新闻列表，每条含 title/content/source/time/url
         """
+        api_key = os.getenv("TANSHU_API_KEY")
+        if api_key:
+            try:
+                url = "https://api.tanshuapi.com/api/toutiao/v1/index"
+                params = {
+                    "key": api_key,
+                    "type": "股票",
+                    "num": max(min_count, 40),
+                    "start": 0,
+                }
+                response = requests.get(url, params=params, timeout=10)
+                data = response.json()
+
+                if data.get("code") == 1:
+                    news_list = []
+                    for news in data.get("data", {}).get("list", []):
+                        try:
+                            item = {
+                                "title": news.get("title", ""),
+                                "content": news.get("content", ""),
+                                "source": news.get("src", ""),
+                                "time": news.get("time", ""),
+                                "url": news.get("weburl", ""),
+                            }
+                            if item["title"] and item["content"]:
+                                news_list.append(item)
+                        except Exception:
+                            continue
+                    if news_list:
+                        return news_list[:min_count]
+                    print("Tanshu API 返回空列表，降级到新浪 feed")
+                else:
+                    print(f"Tanshu API 返回错误: {data.get('msg')}，降级到新浪 feed")
+            except Exception as e:
+                print(f"Tanshu API 请求失败: {e}，降级到新浪 feed")
+        else:
+            print("未配置 TANSHU_API_KEY，使用新浪财经免费 feed")
+
+        # ── 备选：新浪财经免费新闻 feed ──
+        return self._fetch_sina_daily_news(min_count)
+
+    def _fetch_sina_daily_news(self, min_count: int = 20) -> List[Dict]:
+        """使用新浪财经免费 feed 获取每日新闻（无需 API key）。"""
         try:
-            # 使用新的新闻API接口
-            url = "https://api.tanshuapi.com/api/toutiao/v1/index"
+            url = "https://feed.mix.sina.com.cn/api/roll/get"
             params = {
-                "key": os.getenv("TANSHU_API_KEY"),
-                "type": "股票",
-                "num": max(min_count, 40),  # 确保获取足够的新闻
-                "start": 0
+                "pageid": "153",  # 新浪财经新闻
+                "lid": "2516",    # 国内财经
+                "knum": min_count,
+                "page": "1",
             }
-            
-            response = requests.get(url, params=params)
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Referer": "https://finance.sina.com.cn/",
+            }
+            response = requests.get(url, params=params, headers=headers, timeout=15)
             data = response.json()
-            
-            if data.get("code") != 1:  # API返回错误
-                print(f"获取新闻数据失败: {data.get('msg')}")
-                return []
-            
+
             news_list = []
-            for news in data.get("data", {}).get("list", []):
+            for item in data.get("result", {}).get("data", []):
                 try:
-                    news_item = {
-                        'title': news.get('title', ''),
-                        'content': news.get('content', ''),
-                        'source': news.get('src', ''),
-                        'time': news.get('time', ''),
-                        'url': news.get('weburl', '')
-                    }
-                    if news_item['title'] and news_item['content']:
-                        news_list.append(news_item)
-                except Exception as e:
-                    print(f"处理单条新闻数据时出错: {str(e)}")
+                    title = item.get("title", "").strip()
+                    intro = item.get("intro", "").strip()
+                    content = intro or title
+                    if title:
+                        news_list.append({
+                            "title": title,
+                            "content": content,
+                            "source": item.get("media_name", "新浪财经"),
+                            "time": item.get("ctime", ""),
+                            "url": item.get("url", ""),
+                        })
+                except Exception:
                     continue
 
-            if len(news_list) < min_count:
-                print(f"警告：只获取到 {len(news_list)} 条新闻，少于要求的 {min_count} 条")
-            
-            return news_list[:min_count] if len(news_list) > min_count else news_list
-            
+            if not news_list:
+                print("新浪 feed 返回空列表，尝试备用页面抓取...")
+                return self._scrape_sina_finance_page(min_count)
+
+            print(f"新浪财经 feed 获取到 {len(news_list)} 条新闻")
+            return news_list[:min_count]
+
         except Exception as e:
-            print(f"获取新闻数据时出错: {str(e)}")
+            print(f"新浪 feed 请求失败: {e}，尝试页面抓取...")
+            return self._scrape_sina_finance_page(min_count)
+
+    def _scrape_sina_finance_page(self, min_count: int = 20) -> List[Dict]:
+        """终极备选：直接解析新浪财经首页的新闻列表。"""
+        try:
+            url = "https://finance.sina.com.cn/"
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36"
+                ),
+            }
+            response = requests.get(url, headers=headers, timeout=15)
+            response.encoding = "utf-8"
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            news_list = []
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                title = a.text.strip()
+                if not title or len(title) < 8:
+                    continue
+                if "finance.sina.com.cn" in href or "https://" in href:
+                    news_list.append({
+                        "title": title,
+                        "content": title,
+                        "source": "新浪财经",
+                        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "url": href,
+                    })
+                    if len(news_list) >= min_count:
+                        break
+
+            print(f"新浪首页抓取到 {len(news_list)} 条新闻")
+            return news_list[:min_count]
+
+        except Exception as e:
+            print(f"新浪首页抓取失败: {e}")
             return []
 
     def get_stock_news(self, stock_code: str, days: int = 7) -> List[Dict]:
